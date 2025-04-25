@@ -51,6 +51,7 @@ class CustomFormatter(logging.Formatter):
 
         return f"[{current_time}] [{record.levelname}] [{location}] {record.getMessage()}"
 
+
 def setup_logger():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)  # Общий уровень логгера
