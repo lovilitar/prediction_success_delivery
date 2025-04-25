@@ -1,0 +1,3 @@
+[submodule "stepan_library"]
+	path = stepan_library
+	url = https://github.com/lovilitar/stepan_library.git
