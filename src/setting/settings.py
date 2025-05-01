@@ -2,9 +2,7 @@ import os
 import sys
 import logging
 
-from sqlalchemy.orm import declarative_base
-
-from utils.logger import CustomFormatter
+from src.utils.logger import CustomFormatter
 
 if 'AIRFLOW_HOME' in os.environ and '/usr/local/lib/python3.9/dist-packages/airflow/example_dags/' not in sys.path:
     sys.path.append('/usr/local/lib/python3.9/dist-packages/airflow/example_dags/')

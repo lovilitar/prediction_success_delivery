@@ -1,6 +1,6 @@
 import time
 from functools import wraps
-from setting.settings import setup_logger
+from src.setting.settings import setup_logger
 
 logger = setup_logger()
 

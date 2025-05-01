@@ -1,7 +1,7 @@
-from data_loader.raw_data_loader import get_df
-from preprocessor.preprocessing import ManagerPreprocessing
-from setting.settings import setup_logger, dbm
-from utils.decorators import start_finish_function
+from src.data_loader.raw_data_loader import get_df
+from src.pipeline.data_preparation_pipeline import TrainTestPreparer
+from src.setting.settings import setup_logger, dbm
+from src.utils.decorators import start_finish_function
 
 
 logger = setup_logger()
@@ -16,10 +16,10 @@ def start_program():
     df = get_df(engine)
     feature_name = ['delivery_point', 'rasstoyanie', 'region_zagruzki', 'lat_zagruzki', 'lng_zagruzki', 'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'date_create', 'tonnazh', 'obem_znt', 'kolvo_gruzovykh_mest', 'lt_stoimost_perevozki']
 
-    df = ManagerPreprocessing(df=df).df_preprocess(columns_dropna=feature_name, set_correct_datetype=True)
-    return df
+    x_train, y_train, x_test, y_test, x_subset, y_subset = TrainTestPreparer(feature_columns=feature_name).prepare(df)
+    print(x_train.shape)
 
-    # X_train, y_train, X_test, y_test = Preprocessing.df_split_test_and_train(df)
+    return df
 
 
 if __name__ == '__main__':

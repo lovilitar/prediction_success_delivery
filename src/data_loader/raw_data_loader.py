@@ -1,6 +1,6 @@
 import pandas as pd
 
-from utils.decorators import start_finish_function
+from src.utils.decorators import start_finish_function
 
 
 @start_finish_function
