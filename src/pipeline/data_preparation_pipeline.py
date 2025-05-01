@@ -3,7 +3,7 @@ from typing import List, Tuple
 import pandas as pd
 
 from src.preprocessor.preprocessing import ManagerPreprocessing
-from src.preprocessor.splitter import SplitManager, FixedDateTrainTestSplitter, TimeBasedSubsetSelector
+from src.splitter.splitter import SplitManager, FixedDateTrainTestSplitter, TimeBasedSubsetSelector
 from src.utils.decorators import start_finish_function
 
 
