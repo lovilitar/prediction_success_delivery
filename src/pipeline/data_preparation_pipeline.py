@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import Tuple
 
 import pandas as pd
 
@@ -9,7 +9,7 @@ from src.utils.decorators import start_finish_function
 
 class TrainTestPreparer:
     def __init__(self,
-                 feature_columns: List[str],
+                 feature_columns: list[str],
                  test_days: int = 90,
                  subset_percent: float = 0.4,
                  n_segments: int = 5,
@@ -25,7 +25,9 @@ class TrainTestPreparer:
         )
 
     @start_finish_function
-    def prepare(self, df: pd.DataFrame) -> Tuple:
+    def prepare(self,
+                df: pd.DataFrame
+                ) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         df = self.preprocessor(df).df_preprocess(columns_dropna=self.feature_columns, set_correct_datetype=True)
 
         x_train, y_train, x_test, y_test = self.split_manager.run(df, use_subset=False)
