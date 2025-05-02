@@ -11,3 +11,5 @@ __init__.py
 .idea
 
 config.yaml
+
+artifacts/

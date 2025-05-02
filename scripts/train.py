@@ -1,3 +1,5 @@
+import os.path
+
 from src.data_loader.raw_data_loader import get_df
 from src.model_selection.evaluate import evaluate_on_test
 from src.model_selection.search import search_best_model
@@ -10,12 +12,13 @@ from src.utils.decorators import start_finish_function
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import make_scorer, accuracy_score, f1_score, average_precision_score
 
+from src.utils.io import JoblibModelIO, JsonAppendLogger
 
 logger = setup_logger()
 
 
 @start_finish_function
-def start_program(select_hyperparam=True):
+def start_program(select_hyperparam: bool = True, read_model: bool = False, path_read_model: str = "artifacts/models/xgb_pipeline.pkl"):
     logger.info(f"Старт программы")
 
     engine = dbm.get_engine()
@@ -49,13 +52,16 @@ def start_program(select_hyperparam=True):
 
     tss = TimeSeriesSplit(n_splits=3)
 
-    pipe_xgboost = XGBoostPipelineBuilder(features, categorical_columns).build()
-
-    if select_hyperparam:
-        search = search_best_model(pipe_xgboost, param_grid, param_scoring, x_subset, y_subset, refit_metric='ap')
-        best_model = search.best_estimator_
+    if read_model and os.path.isfile(path_read_model):
+        best_model = JoblibModelIO(path_read_model).load_model()
     else:
-        best_model = pipe_xgboost
+        pipe_xgboost = XGBoostPipelineBuilder(features, categorical_columns).build()
+
+        if select_hyperparam:
+            search = search_best_model(pipe_xgboost, param_grid, param_scoring, x_subset, y_subset, refit_metric='ap')
+            best_model = search.best_estimator_
+        else:
+            best_model = pipe_xgboost
 
      # Подбор порога отсечения
     optimizer = ThresholdOptimizer(best_model)
@@ -72,6 +78,16 @@ def start_program(select_hyperparam=True):
     }
 
     logger.info(results)
+
+    # Сохранение моделей и метрик
+    JoblibModelIO(path_read_model).save_model(best_model)
+
+    JsonAppendLogger(
+        "artifacts/params.json", key_name="params", prefix="xgb"
+    ).append(best_model.named_steps['model'].get_params())
+    JsonAppendLogger(
+        "artifacts/metrics.json", key_name="metrics", prefix="xgb"
+    ).append(results)
 
 
 if __name__ == '__main__':
