@@ -21,8 +21,9 @@ class FeatureSelection(BaseEstimator, TransformerMixin):
 
 
 class CategoricalTypeCaster(BaseEstimator, TransformerMixin):
-    def __init__(self, categorical_columns: list[str]):
-        self.categorical_columns = categorical_columns
+    def __init__(self, columns: list[str], columns_type: str | object = "category"):
+        self.columns = columns
+        self.columns_type = columns_type
 
     def fit(self, X: pd.DataFrame, y=None) -> Self:
         return self
@@ -32,9 +33,9 @@ class CategoricalTypeCaster(BaseEstimator, TransformerMixin):
         X = X.copy()
 
         not_found_features = []
-        for col in self.categorical_columns:
+        for col in self.columns:
             if col in X.columns:
-                X[col] = X[col].astype("category")
+                X[col] = X[col].astype(self.columns_type)
             else:
                 not_found_features.append(col)
 
