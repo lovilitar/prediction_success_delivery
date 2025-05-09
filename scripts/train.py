@@ -26,6 +26,8 @@ def get_data():
     engine = dbm.get_engine()
 
     df = get_df(engine)
+    df = df[df.date_create >= (df.date_create.max() - pd.DateOffset(years=3))]
+
     feature_name = ['delivery_point', 'rasstoyanie', 'region_zagruzki', 'lat_zagruzki', 'lng_zagruzki',
                     'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'date_create', 'tonnazh', 'obem_znt',
                     'kolvo_gruzovykh_mest', 'lt_stoimost_perevozki']
@@ -44,6 +46,7 @@ def start_calculation_score(x_train: pd.DataFrame,
                             y_subset: pd.Series,
                             pipe,
                             param_grid: dict,
+                            features_name: dict = {},
                             select_hyperparam: bool = True,
                             read_model: bool = False,
                             path_read_model: str = "artifacts/models/xgb_pipeline.pkl",
@@ -56,8 +59,9 @@ def start_calculation_score(x_train: pd.DataFrame,
         'ap': make_scorer(average_precision_score)
     }
 
-    if read_model and os.path.isfile(path_read_model):
-        best_model = JoblibModelIO(path_read_model).load_model()
+    jm_io = JoblibModelIO(path_read_model)
+    if read_model and os.path.isfile(getattr(jm_io, "path", path_read_model)):
+        best_model = jm_io.load_model()
     else:
 
         if select_hyperparam:
@@ -73,8 +77,8 @@ def start_calculation_score(x_train: pd.DataFrame,
     # Финальная проверка на тесте
     test_metrics = evaluate_on_test(best_model, x_test, y_test, optimal_threshold)
 
-    # Итог
     results = {
+        'features': features_name,
         'threshold': optimal_threshold,
         'train': train_metrics,
         'test': test_metrics
@@ -83,7 +87,7 @@ def start_calculation_score(x_train: pd.DataFrame,
     logger.info(results)
 
     # Сохранение моделей и метрик
-    JoblibModelIO(path_read_model).save_model(best_model)
+    jm_io.save_model(best_model)
 
     JsonAppendLogger(
         "artifacts/params.json", key_name="params", prefix=prefix
@@ -96,27 +100,51 @@ def start_calculation_score(x_train: pd.DataFrame,
 @start_finish_function
 def boost_start(select_hyperparam: bool = True, read_model: bool = False, path_read_model: str = "artifacts/models/xgb_pipeline.pkl", prefix="xgb"):
     x_train, y_train, x_test, y_test, x_subset, y_subset = get_data()
-    categorical_columns = ['distance_group', 'cost_group', 'region_zagruzki', 'region_vygruzki']
 
-    features = ['delivery_point', 'region_zagruzki', 'lat_zagruzki', 'lng_zagruzki',
-                'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'month', 'planned_delivery_days',
+    features = ['delivery_point', 'lat_zagruzki', 'lng_zagruzki',
+                'region_zagruzki', 'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'month', 'planned_delivery_days',
                 'geo_rasstoyanie_km', 'distance_group', 'tonnazh_group', 'cost_group',
                 'rasstoyanie', 'tonnazh', 'lt_stoimost_perevozki']
+    features = ['delivery_point', 'month',
+                'geo_rasstoyanie_km', 'tonnazh_group', 'distance_group',
+                'rasstoyanie', 'tonnazh', 'planned_delivery_days',
+                'lat_zagruzki', 'lng_zagruzki', 'lat_vygruzki', 'lng_vygruzki']
 
-    param_grid = {
-        "model__n_estimators": [100, 300],
-        "model__max_depth": [3, 6],
-        "model__learning_rate": [0.05, 0.1],
-        "model__min_child_weight": [1, 5],
-        "model__subsample": [0.8, 1.0],
-        "model__colsample_bytree": [0.8, 1.0],
-        "model__gamma": [0, 1],
-        "model__reg_alpha": [0, 0.1],
-        "model__reg_lambda": [1, 5]
+    categorical_features = []
+
+    features_name = {
+        "categorical": categorical_features,
+        "numeric": [],
+        "other": [],
+        "all": features
     }
 
-    pipe_xgboost = XGBoostPipelineBuilder(features, categorical_columns).build()
-    start_calculation_score(x_train, y_train, x_test, y_test, x_subset, y_subset, pipe=pipe_xgboost, param_grid=param_grid, select_hyperparam=select_hyperparam, read_model=read_model, path_read_model=path_read_model, prefix=prefix)
+    # param_grid = {
+    #     "model__n_estimators": [100, 300],
+    #     "model__max_depth": [3, 6],
+    #     "model__learning_rate": [0.05, 0.1],
+    #     # "model__min_child_weight": [1, 5],
+    #     "model__subsample": [0.8, 1.0],
+    #     "model__colsample_bytree": [0.8, 1.0],
+    #     # "model__gamma": [0, 1],
+    #     "model__reg_alpha": [0, 0.1],
+    #     "model__reg_lambda": [1, 5]
+    # }
+
+    param_grid = {
+        "model__n_estimators": [300],
+        "model__max_depth": [3],
+        "model__learning_rate": [0.1],
+        # "model__min_child_weight": [1, 5],
+        "model__subsample": [1.0],
+        "model__colsample_bytree": [0.8],
+        # "model__gamma": [0, 1],
+        "model__reg_alpha": [0],
+        "model__reg_lambda": [1]
+    }
+
+    pipe_xgboost = XGBoostPipelineBuilder(features, categorical_features).build()
+    start_calculation_score(x_train, y_train, x_test, y_test, x_subset, y_subset, pipe=pipe_xgboost, param_grid=param_grid, features_name=features_name, select_hyperparam=select_hyperparam, read_model=read_model, path_read_model=path_read_model, prefix=prefix)
 
 
 @start_finish_function
@@ -127,11 +155,18 @@ def log_reg_start(select_hyperparam: bool = True, read_model: bool = False, path
                 'geo_rasstoyanie_km', 'distance_group', 'tonnazh_group', 'cost_group',
                 'rasstoyanie', 'tonnazh', 'lt_stoimost_perevozki']
 
-    categorical_columns = ['distance_group', 'cost_group', 'region_zagruzki', 'region_vygruzki']
+    categorical_features = ['distance_group', 'cost_group', 'region_zagruzki', 'region_vygruzki']
     other_features = ['month']
 
     numeric_features = list(
-        set(x_train[features].select_dtypes(exclude=object).columns) - set(categorical_columns) - set(other_features))
+        set(x_train[features].select_dtypes(exclude=object).columns) - set(categorical_features) - set(other_features))
+
+    features_name = {
+        "categorical": categorical_features,
+        "numeric": numeric_features,
+        "other": other_features,
+        "all": features
+    }
 
     param_grid = {
         "model__penalty": ['l1', 'l2', 'elasticnet', None],
@@ -140,9 +175,11 @@ def log_reg_start(select_hyperparam: bool = True, read_model: bool = False, path
         "model__class_weight": [None, 'balanced']
     }
 
-    pipe_log_reg = LogistRegPipeline(features, categorical_columns, numeric_features).build()
-    start_calculation_score(x_train, y_train, x_test, y_test, x_subset, y_subset, pipe=pipe_log_reg, param_grid=param_grid, select_hyperparam=select_hyperparam, read_model=read_model, path_read_model=path_read_model, prefix=prefix)
+    pipe_log_reg = LogistRegPipeline(features, categorical_features, numeric_features).build()
+    start_calculation_score(x_train, y_train, x_test, y_test, x_subset, y_subset, pipe=pipe_log_reg, param_grid=param_grid, features_name=features_name, select_hyperparam=select_hyperparam, read_model=read_model, path_read_model=path_read_model, prefix=prefix)
 
 
 if __name__ == '__main__':
-    log_reg_start(select_hyperparam=True, path_read_model="artifacts/models/log_reg_pipeline.pkl", prefix="log_reg")
+    boost_start(select_hyperparam=True, read_model=False, path_read_model="artifacts/models/xgb_pipeline.pkl", prefix="xgb")
+
+    # log_reg_start(select_hyperparam=True, path_read_model="artifacts/models/log_reg_pipeline.pkl", prefix="log_reg")

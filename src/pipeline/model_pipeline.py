@@ -13,16 +13,16 @@ logger = setup_logger()
 
 
 class XGBoostPipelineBuilder:
-    def __init__(self, features: list[str], categorical_columns: list[str]):
+    def __init__(self, features: list[str], categorical_features: list[str]):
         self.features = features
-        self.categorical_columns = categorical_columns
+        self.categorical_features = categorical_features
 
     @start_finish_function
-    def build(self):
+    def build(self, **kwargs):
         return Pipeline(steps=[
-            ('cast_category', CategoricalTypeCaster(self.categorical_columns)),
+            ('cast_category', CategoricalTypeCaster(self.categorical_features)),
             ('selection', FeatureSelection(self.features)),
-            ('model', XGBClassifier(enable_categorical=True))
+            ('model', XGBClassifier(enable_categorical=True, **kwargs))
         ])
 
 
@@ -40,10 +40,10 @@ class LogistRegPipeline:
         else:
             self.other_features = other_features
 
-    def build(self):
+    def build(self, **kwargs):
         return Pipeline(steps=[
             ('transform', self._transformers()),
-            ('model', LogisticRegression(penalty=None))
+            ('model', LogisticRegression(penalty=None, **kwargs))
             ])
 
     def _transformers(self):
