@@ -1,13 +1,11 @@
 import os.path
-
 import pandas as pd
 
 from src.data_loader.raw_data_loader import get_df
-from src.model_selection.evaluate import evaluate_on_test
+from src.model_selection.evaluate import DualThresholdClassifier
 from src.model_selection.search import search_best_model
-from src.model_selection.threshold import ThresholdOptimizer
 from src.pipeline.data_preparation_pipeline import TrainTestPreparer
-from src.pipeline.model_pipeline import XGBoostPipelineBuilder, LogistRegPipeline
+from src.pipeline.model_pipeline import XGBoostPipelineBuilder, LogistRegPipeline, BasePipeBuilder
 from src.setting.settings import setup_logger, dbm
 from src.utils.decorators import start_finish_function
 
@@ -19,104 +17,164 @@ from src.utils.io import JoblibModelIO, JsonAppendLogger
 logger = setup_logger()
 
 
-@start_finish_function
-def get_data():
-    logger.info(f"Старт программы")
+class DeliveryPredictionsLate:
+    def __init__(self,
+                 builder_pipe_cls: BasePipeBuilder,
+                 param_grid: dict,
+                 features_name: dict[str, list[str]],
+                 n_splits: int = 3,
+                 path_read_model: str = "artifacts/models/xgb_pipeline.pkl",
+                 prefix: str = "xgb",
+                 read_model: bool = False):
+        self.path_read_model = path_read_model
+        self.prefix = prefix
+        self.features_name = features_name
+        self.param_grid = param_grid
+        self.builder_pipe_cls = builder_pipe_cls
+        self.tss = TimeSeriesSplit(n_splits=n_splits)
+        self.jm_io = JoblibModelIO(self.path_read_model)
+        self.df: pd.DataFrame = pd.DataFrame()
 
-    engine = dbm.get_engine()
+        self._load_data()
 
-    df = get_df(engine)
-    df = df[df.date_create >= (df.date_create.max() - pd.DateOffset(years=3))]
+        if read_model and os.path.isfile(self.jm_io.path):
+            self.best_estimator = self.jm_io.load_model()
+        else:
+            self.best_estimator = self._build_pipeline()
 
-    feature_name = ['delivery_point', 'rasstoyanie', 'region_zagruzki', 'lat_zagruzki', 'lng_zagruzki',
-                    'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'date_create', 'tonnazh', 'obem_znt',
-                    'kolvo_gruzovykh_mest', 'lt_stoimost_perevozki']
+        self.results_metrics: dict
 
-    # Разделение на тест, трейн и подбора гипер параметров
-    x_train, y_train, x_test, y_test, x_subset, y_subset = TrainTestPreparer(feature_columns=feature_name).prepare(df)
-    return x_train, y_train, x_test, y_test, x_subset, y_subset
+    @start_finish_function
+    def _load_data(self) -> None:
+        engine = dbm.get_engine()
+        df = get_df(engine)
+        self.df = df[df.date_create >= (df.date_create.max() - pd.DateOffset(years=3))]
 
+        feature_name = [
+            'delivery_point', 'rasstoyanie', 'region_zagruzki', 'lat_zagruzki', 'lng_zagruzki',
+            'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'date_create', 'tonnazh', 'obem_znt',
+            'kolvo_gruzovykh_mest', 'lt_stoimost_perevozki'
+        ]
+        self.x_train, self.y_train, self.x_test, self.y_test, self.x_subset, self.y_subset = \
+            TrainTestPreparer(feature_columns=feature_name).prepare(self.df)
 
-@start_finish_function
-def start_calculation_score(x_train: pd.DataFrame,
-                            y_train: pd.Series,
-                            x_test: pd.DataFrame,
-                            y_test: pd.Series,
-                            x_subset: pd.DataFrame,
-                            y_subset: pd.Series,
-                            pipe,
-                            param_grid: dict,
-                            features_name: dict = {},
-                            select_hyperparam: bool = True,
-                            read_model: bool = False,
-                            path_read_model: str = "artifacts/models/xgb_pipeline.pkl",
-                            prefix="xgb"):
+    @start_finish_function
+    def _build_pipeline(self):
+        builder_args = self.builder_pipe_cls.__init__.__code__.co_varnames
 
-    tss = TimeSeriesSplit(n_splits=3)
-    param_scoring = {
-        'accuracy': make_scorer(accuracy_score),
-        'f1': make_scorer(f1_score),
-        'ap': make_scorer(average_precision_score)
-    }
+        builder_kwargs = {
+            arg: self.features_name[arg]
+            for arg in builder_args
+            if arg in self.features_name
+        }
+        builder = self.builder_pipe_cls(**builder_kwargs)
+        return builder.build()
 
-    jm_io = JoblibModelIO(path_read_model)
-    if read_model and os.path.isfile(getattr(jm_io, "path", path_read_model)):
-        best_model = jm_io.load_model()
-    else:
+    @start_finish_function
+    def _update_pipeline_with_loaded_model(self) -> None:
+        pipeline = self._build_pipeline()
+        loaded_model = self.best_estimator.named_steps["model"]
+        self.best_estimator = pipeline.set_params(model=loaded_model)
+
+    def _run_grid_search(self) -> None:
+        scoring = {
+            'accuracy': make_scorer(accuracy_score),
+            'f1': make_scorer(f1_score),
+            'ap': make_scorer(average_precision_score),
+        }
+        search = search_best_model(
+            self.best_estimator,
+            self.param_grid,
+            scoring,
+            self.x_subset,
+            self.y_subset,
+            refit_metric='ap',
+            spliter=self.tss
+        )
+        self.best_estimator = search.best_estimator_
+
+    def _log_metrics_and_params(self, results: dict) -> None:
+        JsonAppendLogger("artifacts/params.json", key_name="params", prefix=self.prefix)\
+            .append(self.best_estimator.named_steps['model'].get_params())
+        JsonAppendLogger("artifacts/metrics.json", key_name="metrics", prefix=self.prefix)\
+            .append(results)
+
+    @start_finish_function
+    def start_program(self,
+                      features_name: dict[str, list[str]] | None = None,
+                      rebuild_pipe: bool = False,
+                      save_model: bool = True,
+                      select_hyperparam: bool = True,
+                      get_predict: bool = False):
+        if features_name and rebuild_pipe:
+            logger.info('Новые фичи')
+            self.features_name = features_name
+            self._update_pipeline_with_loaded_model()
 
         if select_hyperparam:
-            search = search_best_model(pipe, param_grid, param_scoring, x_subset, y_subset, refit_metric='ap')
-            best_model = search.best_estimator_
-        else:
-            best_model = pipe
+            logger.info('Подбор параметров')
+            self._run_grid_search()
 
-     # Подбор порога отсечения
-    optimizer = ThresholdOptimizer(best_model)
-    optimal_threshold, train_metrics = optimizer.optimize(x_train, y_train, tss)
+        if save_model:
+            logger.info('Сохранение модели')
+            self.jm_io.save_model(self.best_estimator)
 
-    # Финальная проверка на тесте
-    test_metrics = evaluate_on_test(best_model, x_test, y_test, optimal_threshold)
+        return self._evaluate_model(get_predict=get_predict)
 
-    results = {
-        'features': features_name,
-        'threshold': optimal_threshold,
-        'train': train_metrics,
-        'test': test_metrics
-    }
+    @start_finish_function
+    def _evaluate_model(self, get_predict: bool = False):
+        dtc = DualThresholdClassifier(
+            base_estimator=self.best_estimator,
+            splitter=self.tss,
+            precision_cutoff=0.7,
+            recall_cutoff=0.80,
+        )
+        dtc.fit(self.x_train, self.y_train)
 
-    logger.info(results)
+        self.results_metrics = {
+            'features': self.features_name,
+            'cv_metrics': dtc.cv_report(),
+            'test': dtc.evaluate(self.x_test, self.y_test)
+        }
 
-    # Сохранение моделей и метрик
-    jm_io.save_model(best_model)
+        self._log_metrics_and_params(self.results_metrics)
 
-    JsonAppendLogger(
-        "artifacts/params.json", key_name="params", prefix=prefix
-    ).append(best_model.named_steps['model'].get_params())
-    JsonAppendLogger(
-        "artifacts/metrics.json", key_name="metrics", prefix=prefix
-    ).append(results)
+        if get_predict:
+            logger.info('Предсказания модели')
+            return dtc.predict(self.x_test)
+        return self.results_metrics
 
 
+# Подбор параметров
 @start_finish_function
-def boost_start(select_hyperparam: bool = True, read_model: bool = False, path_read_model: str = "artifacts/models/xgb_pipeline.pkl", prefix="xgb"):
-    x_train, y_train, x_test, y_test, x_subset, y_subset = get_data()
-
-    features = ['delivery_point', 'lat_zagruzki', 'lng_zagruzki',
-                'region_zagruzki', 'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'month', 'planned_delivery_days',
-                'geo_rasstoyanie_km', 'distance_group', 'tonnazh_group', 'cost_group',
-                'rasstoyanie', 'tonnazh', 'lt_stoimost_perevozki']
+def boost_start(select_hyperparam: bool = True,
+                read_model: bool = False,
+                save_model=True,
+                get_predict: bool = False,
+                path_read_model: str = "artifacts/models/xgb_pipeline.pkl",
+                prefix="xgb"):
     features = ['delivery_point', 'month',
                 'geo_rasstoyanie_km', 'tonnazh_group', 'distance_group',
                 'rasstoyanie', 'tonnazh', 'planned_delivery_days',
                 'lat_zagruzki', 'lng_zagruzki', 'lat_vygruzki', 'lng_vygruzki']
 
     categorical_features = []
-
     features_name = {
-        "categorical": categorical_features,
-        "numeric": [],
-        "other": [],
-        "all": features
+        "categorical_features": categorical_features,
+        "numeric_features": [],
+        "other_features": [],
+        "features": features
+    }
+    param_grid = {
+        "model__n_estimators": [300],
+        "model__max_depth": [3],
+        "model__learning_rate": [0.1],
+        # "model__min_child_weight": [1, 5],
+        "model__subsample": [1.0],
+        "model__colsample_bytree": [0.8],
+        # "model__gamma": [0, 1],
+        "model__reg_alpha": [0],
+        "model__reg_lambda": [1]
     }
 
     # param_grid = {
@@ -131,25 +189,29 @@ def boost_start(select_hyperparam: bool = True, read_model: bool = False, path_r
     #     "model__reg_lambda": [1, 5]
     # }
 
-    param_grid = {
-        "model__n_estimators": [300],
-        "model__max_depth": [3],
-        "model__learning_rate": [0.1],
-        # "model__min_child_weight": [1, 5],
-        "model__subsample": [1.0],
-        "model__colsample_bytree": [0.8],
-        # "model__gamma": [0, 1],
-        "model__reg_alpha": [0],
-        "model__reg_lambda": [1]
-    }
-
-    pipe_xgboost = XGBoostPipelineBuilder(features, categorical_features).build()
-    start_calculation_score(x_train, y_train, x_test, y_test, x_subset, y_subset, pipe=pipe_xgboost, param_grid=param_grid, features_name=features_name, select_hyperparam=select_hyperparam, read_model=read_model, path_read_model=path_read_model, prefix=prefix)
+    dpl = DeliveryPredictionsLate(builder_pipe_cls=XGBoostPipelineBuilder,
+                                  param_grid=param_grid,
+                                  features_name=features_name,
+                                  n_splits=3,
+                                  path_read_model=path_read_model,
+                                  prefix=prefix,
+                                  read_model=read_model
+                                  )
+    # Подобрать параметры и сохранить модель с метриками
+    dpl.start_program(features_name=features_name,
+                      save_model=save_model,
+                      select_hyperparam=select_hyperparam,
+                      get_predict=get_predict)
+    return dpl
 
 
 @start_finish_function
-def log_reg_start(select_hyperparam: bool = True, read_model: bool = False, path_read_model: str = "artifacts/models/log_reg_pipeline.pkl", prefix="log_reg"):
-    x_train, y_train, x_test, y_test, x_subset, y_subset = get_data()
+def log_reg_start(select_hyperparam: bool = True,
+                  read_model: bool = False,
+                  save_model=True,
+                  get_predict: bool = False,
+                  path_read_model: str = "artifacts/models/log_reg_pipeline.pkl",
+                  prefix="log_reg"):
     features = ['delivery_point', 'region_zagruzki', 'lat_zagruzki', 'lng_zagruzki',
                 'region_vygruzki', 'lat_vygruzki', 'lng_vygruzki', 'month', 'planned_delivery_days',
                 'geo_rasstoyanie_km', 'distance_group', 'tonnazh_group', 'cost_group',
@@ -158,12 +220,12 @@ def log_reg_start(select_hyperparam: bool = True, read_model: bool = False, path
     categorical_features = ['distance_group', 'cost_group', 'region_zagruzki', 'region_vygruzki']
     other_features = ['month']
 
-    numeric_features = list(
-        set(x_train[features].select_dtypes(exclude=object).columns) - set(categorical_features) - set(other_features))
+    # numeric_features = list(
+    #     set(x_train[features].select_dtypes(exclude=object).columns) - set(categorical_features) - set(other_features))
 
     features_name = {
         "categorical": categorical_features,
-        "numeric": numeric_features,
+        # "numeric": numeric_features,
         "other": other_features,
         "all": features
     }
@@ -175,11 +237,25 @@ def log_reg_start(select_hyperparam: bool = True, read_model: bool = False, path
         "model__class_weight": [None, 'balanced']
     }
 
-    pipe_log_reg = LogistRegPipeline(features, categorical_features, numeric_features).build()
-    start_calculation_score(x_train, y_train, x_test, y_test, x_subset, y_subset, pipe=pipe_log_reg, param_grid=param_grid, features_name=features_name, select_hyperparam=select_hyperparam, read_model=read_model, path_read_model=path_read_model, prefix=prefix)
+    dpl = DeliveryPredictionsLate(builder_pipe_cls=LogistRegPipeline,
+                                  param_grid=param_grid,
+                                  features_name=features_name,
+                                  n_splits=3,
+                                  path_read_model=path_read_model,
+                                  prefix=prefix,
+                                  read_model=read_model
+                                  )
+    # Подобрать параметры и сохранить модель с метриками
+    dpl.start_program(features_name=features_name,
+                      save_model=save_model,
+                      select_hyperparam=select_hyperparam,
+                      get_predict=get_predict)
+    return dpl
 
 
 if __name__ == '__main__':
-    boost_start(select_hyperparam=True, read_model=False, path_read_model="artifacts/models/xgb_pipeline.pkl", prefix="xgb")
-
-    # log_reg_start(select_hyperparam=True, path_read_model="artifacts/models/log_reg_pipeline.pkl", prefix="log_reg")
+    boost_start(select_hyperparam=True,
+                read_model=False,
+                save_model=True,
+                path_read_model="artifacts/models/xgb_pipeline.pkl",
+                prefix="xgb")
