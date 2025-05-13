@@ -1,3 +1,5 @@
+from abc import ABC, abstractmethod
+
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -12,7 +14,13 @@ from src.utils.decorators import start_finish_function
 logger = setup_logger()
 
 
-class XGBoostPipelineBuilder:
+class BasePipeBuilder(ABC):
+    @abstractmethod
+    def build(self, *args, **kwargs):
+        logger.error(f"Ошибка: метод build() не реализован в {self.__class__.__name__}")
+
+
+class XGBoostPipelineBuilder(BasePipeBuilder):
     def __init__(self, features: list[str], categorical_features: list[str]):
         self.features = features
         self.categorical_features = categorical_features
@@ -26,7 +34,7 @@ class XGBoostPipelineBuilder:
         ])
 
 
-class LogistRegPipeline:
+class LogistRegPipeline(BasePipeBuilder):
     def __init__(self, features: list[str], categorical_columns: list[str], numeric_features: list[str],
                  other_features: list[str] = None):
         self.features = features
